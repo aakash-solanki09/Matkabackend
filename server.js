@@ -22,6 +22,10 @@ const io = socketIo(server, {
     }
 });
 
+app.get('/', (req, res) => {
+    res.send('Matka Fun API is running...');
+});
+
 app.use('/api/users', require('./routes/userRoutes'));
 app.use('/api/game', require('./routes/gameRoutes'));
 
