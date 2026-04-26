@@ -76,56 +76,39 @@ const calculateResult = async () => {
             payouts[i] = numberBets[i] * 2;
         }
 
-        // Logic: Every 10th round is a "Safe Round" (House MUST profit)
+        // Logic: The winning payout MUST NEVER exceed the total bets in the round.
+        // This ensures the house never loses money.
+        const safeNumbers = [];
+        for (let i = 0; i <= 9; i++) {
+            if (payouts[i] <= totalBet) {
+                safeNumbers.push(i);
+            }
+        }
+
         const isSafeRound = currentRound.roundNumber % 10 === 0;
         let winningNumber = 0;
 
         if (isSafeRound) {
-            // Find numbers where payout <= totalBet (Safe for house)
-            const safeNumbers = [];
-            for (let i = 0; i <= 9; i++) {
-                if (payouts[i] <= totalBet) {
-                    safeNumbers.push(i);
+            // Safe Round (Every 10th): Maximize house profit
+            let maxProfit = -Infinity;
+            safeNumbers.forEach(num => {
+                const profit = totalBet - payouts[num];
+                if (profit > maxProfit) {
+                    maxProfit = profit;
+                    winningNumber = num;
                 }
-            }
-
-            if (safeNumbers.length > 0) {
-                // Pick the one with max profit among safe ones
-                let maxProfit = -Infinity;
-                safeNumbers.forEach(num => {
-                    const profit = totalBet - payouts[num];
-                    if (profit > maxProfit) {
-                        maxProfit = profit;
-                        winningNumber = num;
-                    }
-                });
-            } else {
-                // If no safe number, pick the one with MINIMUM payout to minimize loss
-                let minPayout = Infinity;
-                for (let i = 0; i <= 9; i++) {
-                    if (payouts[i] < minPayout) {
-                        minPayout = payouts[i];
-                        winningNumber = i;
-                    }
-                }
-            }
+            });
         } else {
-            // Normal Round: Pick a number that is "fairer" or less likely to be 0
-            // We'll pick a number where payout < totalBet * 1.2 (allowing some house loss but not much)
-            // or just pick a number that has SOME bets but not the most.
-            const potentialWinners = [];
-            for (let i = 0; i <= 9; i++) {
-                // Prefer numbers that have bets but wouldn't break the bank
-                if (payouts[i] > 0 && payouts[i] < totalBet * 1.5) {
-                    potentialWinners.push(i);
-                }
-            }
-
-            if (potentialWinners.length > 0) {
-                winningNumber = potentialWinners[Math.floor(Math.random() * potentialWinners.length)];
+            // Normal Round: Stay in profit, but allow users to win if it's safe.
+            // Pick from safe numbers that actually have bets on them.
+            const winnersWithBets = safeNumbers.filter(num => numberBets[num] > 0);
+            
+            if (winnersWithBets.length > 0) {
+                // Randomly pick a winner from those who bet safely
+                winningNumber = winnersWithBets[Math.floor(Math.random() * winnersWithBets.length)];
             } else {
-                // Randomly pick between 0-9 but avoid 0 if possible unless it's random
-                winningNumber = Math.floor(Math.random() * 10);
+                // If no safe number has bets, pick any safe number (likely 0 bets)
+                winningNumber = safeNumbers[Math.floor(Math.random() * safeNumbers.length)];
             }
         }
 
@@ -147,7 +130,7 @@ const calculateResult = async () => {
             await user.save();
         }
 
-        console.log(`Round ${currentRound.roundNumber} result calculated: ${winningNumber}`);
+        console.log(`Round ${currentRound.roundNumber} result calculated: ${winningNumber} (Profit: ${totalBet - payouts[winningNumber]})`);
     } catch (error) {
         console.error('Error calculating result:', error);
     }
