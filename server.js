@@ -11,13 +11,22 @@ dotenv.config();
 connectDB();
 
 const app = express();
-app.use(cors());
+const allowedOrigins = [
+    'https://matka-frontend-rho.vercel.app',
+    'http://localhost:5173' // keep local dev working
+];
+
+app.use(cors({
+    origin: allowedOrigins,
+    methods: ["GET", "POST"],
+    credentials: true
+}));
 app.use(express.json());
 
 const server = http.createServer(app);
 const io = socketIo(server, {
     cors: {
-        origin: "*",
+        origin: allowedOrigins,
         methods: ["GET", "POST"]
     }
 });
