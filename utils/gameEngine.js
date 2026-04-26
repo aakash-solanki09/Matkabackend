@@ -12,125 +12,164 @@ const initGameEngine = (socketIo) => {
 
 const startNewRound = async () => {
     try {
-        const lastRound = await Round.findOne().sort({ roundNumber: -1 });
-        const roundNumber = lastRound ? lastRound.roundNumber + 1 : 1;
+        const now = new Date();
+        const dateStr = now.getFullYear().toString() + 
+                        (now.getMonth() + 1).toString().padStart(2, '0') + 
+                        now.getDate().toString().padStart(2, '0');
+        
+        // Check if an 'open' round already exists (recovery from crash)
+        const existingOpen = await Round.findOne({ status: 'open' }).sort({ createdAt: -1 });
+        if (existingOpen) {
+            currentRound = existingOpen;
+            console.log(`Recovered open round ${currentRound.roundNumber}`);
+            startTimer();
+            return;
+        }
 
-        const startTime = new Date();
-        const endTime = new Date(startTime.getTime() + 30000); // 30 seconds
+        // Find the absolute last round number for today
+        const lastRound = await Round.findOne({ 
+            roundNumber: { $gte: parseInt(dateStr + '0000') } 
+        }).sort({ roundNumber: -1 });
+
+        let nextRoundNumber = lastRound ? lastRound.roundNumber + 1 : parseInt(dateStr + '0001');
 
         currentRound = await Round.create({
-            roundNumber,
-            startTime,
-            endTime,
-            status: 'open',
+            roundNumber: nextRoundNumber,
+            endTime: new Date(Date.now() + 30000),
+            status: 'open'
         });
 
-        console.log(`Starting Round ${roundNumber}`);
+        console.log(`Starting Round ${currentRound.roundNumber}`);
+        
         io.emit('newRound', {
             roundId: currentRound._id,
             roundNumber: currentRound.roundNumber,
-            startTime: currentRound.startTime,
             endTime: currentRound.endTime,
         });
 
-        // Run countdown
-        let timeLeft = 30;
-        const timer = setInterval(() => {
-            timeLeft--;
-            io.emit('timer', timeLeft);
-
-            if (timeLeft === 5) {
-                calculateResult();
-            }
-
-            if (timeLeft <= 0) {
-                clearInterval(timer);
-                endRound();
-            }
-        }, 1000);
+        startTimer();
     } catch (error) {
+        if (error.code === 11000) {
+            console.log('Duplicate round detected, retrying...');
+            return setTimeout(startNewRound, 1000);
+        }
         console.error('Error starting new round:', error);
     }
 };
 
+const startTimer = () => {
+    let timeLeft = 30;
+    const timer = setInterval(() => {
+        timeLeft--;
+        io.emit('timer', timeLeft);
+
+        if (timeLeft === 5) {
+            calculateResult();
+        }
+
+        if (timeLeft <= 0) {
+            clearInterval(timer);
+            endRound();
+        }
+    }, 1000);
+};
+
 const calculateResult = async () => {
     try {
+        // Find a winning number (0-9) that results in MINIMUM payout (Admin profit algo)
+        const bets = await Bet.find({ roundId: currentRound._id });
+        
+        let minPayout = Infinity;
+        let bestNumber = 0;
+
+        // Simulate each possible winning number (0-9)
+        for (let num = 0; num <= 9; num++) {
+            let totalPayoutForNum = 0;
+            
+            const props = (n) => {
+                const size = n >= 5 ? 'big' : 'small';
+                let color = 'red';
+                if (n === 0 || n === 5) color = 'violet';
+                else if ([1, 3, 7, 9].includes(n)) color = 'green';
+                return { size, color };
+            };
+
+            const p = props(num);
+
+            bets.forEach(bet => {
+                let payout = 0;
+                if (bet.type === 'number' && parseInt(bet.selection) === num) {
+                    payout = bet.amount * 10;
+                } else if (bet.type === 'size' && bet.selection === p.size) {
+                    payout = bet.amount * 2;
+                } else if (bet.type === 'color') {
+                    if (bet.selection === p.color) {
+                        // Regular color win
+                        payout = bet.amount * 2;
+                        // If it's a 0 or 5 (violet mix), color only gets 1.5x
+                        if (num === 0 || num === 5) payout = bet.amount * 1.5;
+                    } else if (bet.selection === 'violet' && (num === 0 || num === 5)) {
+                        payout = bet.amount * 4.5;
+                    }
+                }
+                totalPayoutForNum += payout;
+            });
+
+            if (totalPayoutForNum < minPayout) {
+                minPayout = totalPayoutForNum;
+                bestNumber = num;
+            }
+        }
+
+        currentRound.winningNumber = bestNumber;
+        currentRound.totalBetAmount = bets.reduce((sum, b) => sum + b.amount, 0);
+        currentRound.totalPayout = minPayout;
         currentRound.status = 'closed';
         await currentRound.save();
 
-        const bets = await Bet.find({ roundId: currentRound._id });
-        const totalBet = bets.reduce((sum, bet) => sum + bet.amount, 0);
+        // Update all bets in DB
+        const props = (n) => {
+            const size = n >= 5 ? 'big' : 'small';
+            let color = 'red';
+            if (n === 0 || n === 5) color = 'violet';
+            else if ([1, 3, 7, 9].includes(n)) color = 'green';
+            return { size, color };
+        };
+        const winP = props(bestNumber);
 
-        // Group bets by number
-        const numberBets = {};
-        for (let i = 0; i <= 9; i++) {
-            numberBets[i] = 0;
-        }
-        bets.forEach(bet => {
-            numberBets[bet.number] += bet.amount;
-        });
+        for (const bet of bets) {
+            let won = false;
+            let payout = 0;
 
-        // Calculate potential payouts for each number
-        const payouts = {};
-        for (let i = 0; i <= 9; i++) {
-            payouts[i] = numberBets[i] * 2;
-        }
-
-        // Logic: The winning payout MUST NEVER exceed the total bets in the round.
-        // This ensures the house never loses money.
-        const safeNumbers = [];
-        for (let i = 0; i <= 9; i++) {
-            if (payouts[i] <= totalBet) {
-                safeNumbers.push(i);
-            }
-        }
-
-        const isSafeRound = currentRound.roundNumber % 10 === 0;
-        let winningNumber = 0;
-
-        if (isSafeRound) {
-            // Safe Round (Every 10th): Maximize house profit
-            let maxProfit = -Infinity;
-            safeNumbers.forEach(num => {
-                const profit = totalBet - payouts[num];
-                if (profit > maxProfit) {
-                    maxProfit = profit;
-                    winningNumber = num;
+            if (bet.type === 'number' && parseInt(bet.selection) === bestNumber) {
+                won = true;
+                payout = bet.amount * 10;
+            } else if (bet.type === 'size' && bet.selection === winP.size) {
+                won = true;
+                payout = bet.amount * 2;
+            } else if (bet.type === 'color') {
+                if (bet.selection === winP.color) {
+                    won = true;
+                    payout = bet.amount * 2;
+                    if (bestNumber === 0 || bestNumber === 5) payout = bet.amount * 1.5;
+                } else if (bet.selection === 'violet' && (bestNumber === 0 || bestNumber === 5)) {
+                    won = true;
+                    payout = bet.amount * 4.5;
                 }
-            });
-        } else {
-            // Normal Round: Stay in profit, but allow users to win if it's safe.
-            // Pick from safe numbers that actually have bets on them.
-            const winnersWithBets = safeNumbers.filter(num => numberBets[num] > 0);
-            
-            if (winnersWithBets.length > 0) {
-                // Randomly pick a winner from those who bet safely
-                winningNumber = winnersWithBets[Math.floor(Math.random() * winnersWithBets.length)];
-            } else {
-                // If no safe number has bets, pick any safe number (likely 0 bets)
-                winningNumber = safeNumbers[Math.floor(Math.random() * safeNumbers.length)];
             }
-        }
 
-        // Update round with results
-        currentRound.winningNumber = winningNumber;
-        currentRound.totalBetAmount = totalBet;
-        currentRound.totalPayout = payouts[winningNumber];
-        await currentRound.save();
-
-        // Process winners
-        const winningBets = bets.filter(bet => bet.number === winningNumber);
-        for (const bet of winningBets) {
-            bet.isWinner = true;
-            bet.payout = bet.amount * 2;
+            bet.isWinner = won;
+            bet.payout = payout;
             await bet.save();
 
-            const user = await User.findById(bet.user);
-            user.walletBalance += bet.payout;
-            await user.save();
+            if (won) {
+                const user = await User.findById(bet.user);
+                user.walletBalance += payout;
+                await user.save();
+            }
         }
 
-        console.log(`Round ${currentRound.roundNumber} result calculated: ${winningNumber} (Profit: ${totalBet - payouts[winningNumber]})`);
+        console.log(`Round ${currentRound.roundNumber} Result: ${bestNumber} (${winP.size}, ${winP.color}) - Pool: ${currentRound.totalBetAmount}, Payout: ${currentRound.totalPayout}`);
     } catch (error) {
         console.error('Error calculating result:', error);
     }
@@ -138,16 +177,25 @@ const calculateResult = async () => {
 
 const endRound = async () => {
     try {
-        // Broadcast the pre-calculated result
+        const winningProps = (num) => {
+            const size = num >= 5 ? 'BIG' : 'SMALL';
+            let color = 'red';
+            if (num === 0 || num === 5) color = 'violet'; 
+            else if ([1, 3, 7, 9].includes(num)) color = 'green';
+            return { size, color };
+        };
+
+        const props = winningProps(currentRound.winningNumber);
+
         io.emit('roundResult', {
+            roundId: currentRound._id,
             winningNumber: currentRound.winningNumber,
+            size: props.size,
+            color: props.color,
             totalBet: currentRound.totalBetAmount,
             totalPayout: currentRound.totalPayout,
         });
 
-        console.log(`Round ${currentRound.roundNumber} ended. Winner: ${currentRound.winningNumber}`);
-
-        // Wait 5 seconds before starting next round
         setTimeout(startNewRound, 5000);
     } catch (error) {
         console.error('Error ending round:', error);

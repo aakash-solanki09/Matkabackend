@@ -11,11 +11,14 @@ const betSchema = mongoose.Schema({
         required: true,
         ref: 'Round',
     },
-    number: {
-        type: Number,
+    type: {
+        type: String,
         required: true,
-        min: 0,
-        max: 9,
+        enum: ['number', 'color', 'size'],
+    },
+    selection: {
+        type: String,
+        required: true,
     },
     amount: {
         type: Number,

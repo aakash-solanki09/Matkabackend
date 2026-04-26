@@ -4,30 +4,31 @@ const { getCurrentRound } = require('../utils/gameEngine');
 
 const placeBet = async (req, res) => {
     try {
-        const { number, amount } = req.body;
+        const { type, selection, amount } = req.body;
         const currentRound = getCurrentRound();
 
         if (!currentRound || currentRound.status !== 'open') {
             return res.status(400).json({ message: 'No active round for betting' });
         }
 
-        if (number < 0 || number > 9) {
-            return res.status(400).json({ message: 'Invalid number' });
+        // Validation
+        if (!['number', 'color', 'size'].includes(type)) {
+            return res.status(400).json({ message: 'Invalid bet type' });
+        }
+
+        if (type === 'number' && (parseInt(selection) < 0 || parseInt(selection) > 9)) {
+            return res.status(400).json({ message: 'Invalid number selection' });
+        }
+        if (type === 'color' && !['red', 'green', 'violet'].includes(selection)) {
+            return res.status(400).json({ message: 'Invalid color selection' });
+        }
+        if (type === 'size' && !['big', 'small'].includes(selection)) {
+            return res.status(400).json({ message: 'Invalid size selection' });
         }
 
         const user = await User.findById(req.user._id);
         if (user.walletBalance < amount) {
             return res.status(400).json({ message: 'Insufficient balance' });
-        }
-
-        // Check if user already placed a bet in this round
-        const existingBet = await Bet.findOne({ 
-            user: req.user._id, 
-            roundId: currentRound._id 
-        });
-
-        if (existingBet) {
-            return res.status(400).json({ message: 'You have already placed a bet for this round' });
         }
 
         // Deduct coins
@@ -37,7 +38,8 @@ const placeBet = async (req, res) => {
         const bet = await Bet.create({
             user: req.user._id,
             roundId: currentRound._id,
-            number,
+            type,
+            selection,
             amount,
         });
 
@@ -53,12 +55,12 @@ const placeBet = async (req, res) => {
 };
 
 const getRecentRounds = async (req, res) => {
-    const rounds = await require('../models/Round').find({ status: 'closed' }).sort({ createdAt: -1 }).limit(10);
+    const rounds = await require('../models/Round').find({ status: 'closed' }).sort({ createdAt: -1 }).limit(1000);
     res.json(rounds);
 };
 
 const getMyBets = async (req, res) => {
-    const bets = await Bet.find({ user: req.user._id }).populate('roundId').sort({ createdAt: -1 }).limit(20);
+    const bets = await Bet.find({ user: req.user._id }).populate('roundId').sort({ createdAt: -1 }).limit(1000);
     res.json(bets);
 };
 
