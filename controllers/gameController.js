@@ -20,6 +20,16 @@ const placeBet = async (req, res) => {
             return res.status(400).json({ message: 'Insufficient balance' });
         }
 
+        // Check if user already placed a bet in this round
+        const existingBet = await Bet.findOne({ 
+            user: req.user._id, 
+            roundId: currentRound._id 
+        });
+
+        if (existingBet) {
+            return res.status(400).json({ message: 'You have already placed a bet for this round' });
+        }
+
         // Deduct coins
         user.walletBalance -= amount;
         await user.save();
